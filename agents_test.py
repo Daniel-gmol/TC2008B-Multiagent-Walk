@@ -12,22 +12,50 @@ import IPython
 
 class Pedestrian(ap.Agent):
     def setup(self):
-        self.velocity = [1, 0, 0]
-        self.semaphore_state = None
+        # Agent attributes
+        self.priority = 0             # migth be used for agent neogotiation
+        self.velocity = [1, 0, 0]     # Initial velocity for movement
+        self.look_ahead_distance = 5  # Distance to start checking the semaphore
 
-    def receive_semaphore_state(self, state):
-        self.semaphore_state = state
+        # Agent perceptions
+        self.semaphore_x = None     # x-coord of the semaphore (intersection)
+        self.sempahore_state = None # semaphore state (0 - red, 1 - green)
 
     def setup_pos(self, space):
-        self.space = space
-        self.neighbors = space.neighbors
-        self.pos = space.positions[self]
+        self.space = space               # space where the agent is
+        self.pos = space.positions[self] # agent position in space
+        self.neighbors = space.neighbors # might be used for collision avoidance
+
+    def percept_semaphore(self, semaphore_x, semaphore_state):
+        self.semaphore_x = semaphore_x         # x-coordinate of the semaphore
+        self.semaphore_state = semaphore_state # semaphore state
+
+    def check_semaphore_state(self):
+        if self.semaphore_x is not None:
+            distance_to_semaphore = self.semaphore_x - \
+                self.pos[0]  # distance of agent to semaphore
+            # if distance is within perception, check semaphore state
+            if 0 <= distance_to_semaphore <= self.look_ahead_distance:
+                semaphore_state = self.model.semaphore.get_state()
+                return semaphore_state, distance_to_semaphore
+        return None, None
 
     def update_velocity(self):
-        if self.semaphore_state == 1:  # Green light
-            self.velocity = [0, 0, 0]  # Stop
-        elif self.semaphore_state == 0  :  # Red light
-            self.velocity = [1, 0, 0] 
+        # Check if a semaphore can be seen
+        # (update sempahore_x)
+
+        semaphore_state, distance_to_semaphore = self.check_semaphore_state()
+
+        if semaphore_state is not None:
+            if semaphore_state == 0 and distance_to_semaphore <= self.look_ahead_distance:
+                # Red light: Start slowing down or stop
+                self.velocity = [max(0, 1 - (self.look_ahead_distance - distance_to_semaphore)/self.look_ahead_distance), 0, 0]
+            elif semaphore_state == 1:
+                # Green light: Continue moving at normal speed
+                self.velocity = [1, 0, 0]
+        else:
+            # No semaphore or not within look-ahead distance: Continue moving at normal speed
+            self.velocity = [1, 0, 0]
 
     def update_position(self):
         self.space.move_by(self, self.velocity)
@@ -39,23 +67,31 @@ class Semaphore(ap.Agent):
 
     def setup_pos(self, space):
         self.space = space
-        self.neighbors = space.neighbors
         self.pos = space.positions[self]
+        self.neighbors = space.neighbors
 
-    def set_state(self):
+    def toggle_state(self):
         self.state = 1 if self.state == 0 else 0
 
-    def get_state(self):
-        return self.state
+    def set_state(self, number):
+        # 0 - red, 1 - green
+        self.state = number
 
-    def communicate_state(self):
+    def communicate_state(self, pedestrian):
         # Get all agents within 2 units of the semaphore
-        nearby_pedestrians = self.space.neighbors(self, distance=2)
+        if isinstance(pedestrian, Pedestrian):
+            pedestrian.percept_semaphore(self.pos[0], self.state)
 
-        # Communicate the state to nearby pedestrians
-        for pedestrian in nearby_pedestrians:
-            if isinstance(pedestrian, Pedestrian):
-                pedestrian.receive_semaphore_state(self.state)
+
+class Vehicle(ap.Agent):
+    def setup(self):
+        self.velocity = [1, 0, 0]
+        self.look_ahead_distance = 5
+
+    def setup_pos(self, space):
+        self.space = space
+        self.pos = space.positions[self]
+        self.neighbors = space.neighbors
 
 
 class Model(ap.Model):
@@ -92,12 +128,9 @@ class Model(ap.Model):
         self.pedestrianAgents.setup_pos(self.space)
 
     def step(self):
-        # Toggle the semaphore state every 5 steps
+        # Toggle the semaphore state every 8 steps
         if self.t % 8 == 0:
-            self.semaphore.set_state()
-        
-        # Semaphore communicates its state to nearby pedestrians
-        self.semaphore.communicate_state()
+            self.semaphore.toggle_state()
 
         # Pedestrians update their velocities based on the semaphore state
         self.pedestrianAgents.update_velocity()
